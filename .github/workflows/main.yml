@@ -10,16 +10,10 @@ jobs:
     outputs:
       deploy_status: ${{ steps.deploy_ec2.outputs.deploy_status }}
     env:
-      AWS_ACCESS_KEY_ID: AKIAQ5TCSRTUXPV4F257
-      AWS_SECRET_ACCESS_KEY: 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
+      AWS_ACCESS_KEY_ID: AKIAYZBPUYYT6QAN72WF
+      AWS_SECRET_ACCESS_KEY: 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
       AWS_REGION: eu-north-1
     steps:
-      - name: Record build start time
-        run: |
-          echo $(date -u +%s) > build-start.txt
-          echo $(date -u +%Y-%m-%d) > build-start-date.txt
-          echo $(date -u +%H:%M:%S) > build-start-time.txt
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -28,59 +22,29 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install SBOM tools
-        run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Generate SBOM
-        run: |
-          mkdir -p ./sbom-output/sbom-frontend
-          syft dir:. -o cyclonedx-json | jq . > ./sbom-output/sbom-frontend/sbom-frontend-sbom.json
-
-      - name: Scan SBOM for vulnerabilities
-        run: |
-          grype sbom:./sbom-output/sbom-frontend/sbom-frontend-sbom.json --fail-on high --output json | jq . > ./sbom-output/sbom-frontend/sbom-frontend-grype-report.json
-
       - name: Login to DockerHub
         run: echo $DOCKERHUB_TOKEN | docker login -u $DOCKERHUB_USERNAME --password-stdin
         env:
-          DOCKERHUB_USERNAME: gokulmeyghanam
-          DOCKERHUB_TOKEN: dckr_pat_EgLmb0Jwv1GFOzOB6gYa_DhgSRc
+          DOCKERHUB_USERNAME: praveendevops2801
+          DOCKERHUB_TOKEN: dckr_pat_vIl39Ol07QAydLloGnzVqajlsvE
 
       - name: Build Docker image
-        run: docker build -t gokulmeyghanam/test:latest .
+        run: docker build -t praveendevops2801/test:latest .
 
       - name: Push to DockerHub
-        run: docker push gokulmeyghanam/test:latest
+        run: docker push praveendevops2801/test:latest
 
       - name: Run Trivy vulnerability scanner (GitHub UI)
         uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
         with:
-          image-ref: 'gokulmeyghanam/test:latest'
+          image-ref: 'praveendevops2801/test:latest'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      - name: Run Trivy vulnerability scanner (for notification)
-        run: |
-          trivy image gokulmeyghanam/test:latest --format table --severity CRITICAL,HIGH > trivy-report.txt || echo "Trivy scan failed or image missing" > trivy-report.txt
-
-      - name: Upload Trivy report
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-report
-          path: trivy-report.txt
-
-      - name: Upload SBOM and Grype reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-reports
-          path: ./sbom-output/sbom-frontend/
 
       # Deploy new container on alternate port without stopping old container
       - name: Deploy to EC2 (Manual Blue-Green)
@@ -88,7 +52,7 @@ jobs:
         continue-on-error: true
         uses: appleboy/ssh-action@v0.1.10
         with:
-          host: 16.170.243.111
+          host: 57.181.40.199
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
@@ -103,10 +67,10 @@ jobs:
               echo "Green is active or none running, deploying blue"
             fi
 
-            docker pull gokulmeyghanam/test:latest
+            docker pull praveendevops2801/test:latest
 
             # Run new container on alternate port (do not stop old container)
-            docker run -d --name $NEW_CONTAINER -p $NEW_PORT:80 gokulmeyghanam/test:latest || echo "Container $NEW_CONTAINER probably already running."
+            docker run -d --name $NEW_CONTAINER -p $NEW_PORT:80 praveendevops2801/test:latest || echo "Container $NEW_CONTAINER probably already running."
 
             # Health check for new container
             for i in {1..20}; do
@@ -121,30 +85,3 @@ jobs:
             # Manual nginx config update and reload expected here by you
 
             echo "deploy_status=success" >> $GITHUB_OUTPUT
-
-  notify:
-    runs-on: ubuntu-latest
-    needs: build-and-deploy
-    if: always()
-    steps:
-      - name: Download Trivy report
-        uses: actions/download-artifact@v4
-        with:
-          name: trivy-report
-          path: .
-
-      - name: Extract Trivy Summary
-        run: |
-          if grep -q "Total:" trivy-report.txt; then
-            SUMMARY=$(grep -E "Total:" trivy-report.txt | tail -n 1)
-          else
-            SUMMARY="No Trivy data available"
-          fi
-          echo "SUMMARY=$SUMMARY" >> $GITHUB_ENV
-
-      - name: Notify Teams
-        run: |
-          set -x
-          PAYLOAD="{\"text\":\"🔔 **Build Notification**\\n**📌 Deploy Status:** ${{ needs.build-and-deploy.outputs.deploy_status }}\\n**🔧 Workflow:** ${{ github.workflow }}\\n**🌿 Branch:** ${{ github.ref_name }}\\n**🔑 Commit:** ${{ github.sha }}\\n**👤 Actor:** ${{ github.actor }}\\n**📦 Repository:** ${{ github.repository }}\\n**📝 Commit Message:** ${{ github.event.head_commit.message }}\\n**✍️ Commit Author:** ${{ github.event.head_commit.author.name }}\\n**📊 Trivy Vulnerabilities Summary:** $SUMMARY\\n**🔗 View Details:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-          RESPONSE=$(curl -s -w "\nHTTP_STATUS_CODE:%{http_code}\n" -H 'Content-Type: application/json' -d "$PAYLOAD" "https://inocyx.webhook.office.com/webhookb2/b2f24366-6c59-4de0-9fc5-6963c73f1b5c@a63df4ca-e300-4210-9614-46f210e37dd6/IncomingWebhook/800e796faa9947378fab26556aaa2fa5/4d3a18ad-26bc-4a66-ad4b-f2275594f39e/V2UoD_mqlKfFWQnDY0fzQZP9bnZHlPcKpEz3udQ3zh-LU1")
-          echo "$RESPONSE"
